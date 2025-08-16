@@ -121,8 +121,8 @@ class LoggerWidget(QWidget):
         if not lines:
             return {}
         method_url = lines[0].split(" ", 1)
-        method = method_url if len(method_url) > 0 else ""
-        url = method_url if len(method_url) > 1 else ""
+        method = method_url[0] if len(method_url) > 0 else ""
+        url = method_url[1] if len(method_url) > 1 else ""
         headers, body = {}, ""
         parsing_headers = True
         for line in lines[1:]:

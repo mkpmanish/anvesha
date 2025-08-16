@@ -253,6 +253,7 @@ def build_basic_openapi_document(operation):
 
 def make_req_str_from_dict(req_dict):
     request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
+    request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
     headers = req_dict.get('headers', {})
     headers_str = "\n".join(f"{k}: {v}" for k, v in headers.items()) if headers else ""
     body = req_dict.get('body', '')
@@ -424,6 +425,7 @@ class MainApp(QMainWindow):
             self.logger_tab.clear_all()
             for item in logger_requests:
                 req_dict = item.get('request', {})
+                print(req_dict)
                 resp_dict = item.get('response', {})
                 if req_dict:
                     self.logger_tab.log_request(req_dict, resp_dict)
@@ -435,6 +437,7 @@ class MainApp(QMainWindow):
             QMessageBox.information(self, "Import Successful", f"Imported data loaded from {filename}")
         except Exception as e:
             QMessageBox.warning(self, "Import Failed", str(e))
+
 
     def closeEvent(self, event):
         self.flow_receiver.stop()
