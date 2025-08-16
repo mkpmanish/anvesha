@@ -1,16 +1,69 @@
+# main.py
+
 import sys
 import os
 import json
+import threading
+import socket
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QLabel,
     QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox
 )
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 from logger_widget import LoggerWidget
 from replay_widget import ReplayWidget
 from bulksender_widget import BulkSenderWidget
 from proxy_runner import ProxyRunner
 import webbrowser
+
+SOCKET_PATH = "/tmp/anvesha_proxy.sock"  # Adjust if needed for your OS
+
+class FlowEventEmitter(QObject):
+    new_flow = pyqtSignal(dict)
+
+class FlowReceiverThread(threading.Thread):
+    def __init__(self, emit_flow_callback):
+        super().__init__(daemon=True)
+        self.emit_flow_callback = emit_flow_callback
+        self._running = True
+        try:
+            if os.path.exists(SOCKET_PATH):
+                os.unlink(SOCKET_PATH)
+        except Exception:
+            pass
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(SOCKET_PATH)
+        self.server.listen(1)
+
+    def run(self):
+        while self._running:
+            try:
+                conn, _ = self.server.accept()
+                with conn:
+                    data = b""
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    if data:
+                        try:
+                            for line in data.decode("utf-8").splitlines():
+                                flow = json.loads(line)
+                                print("[FlowReceiverThread] Emitting new_flow signal")
+                                self.emit_flow_callback(flow)
+                        except Exception as e:
+                            print("Error parsing IPC flow data:", e)
+            except Exception as e:
+                print("IPC server error:", e)
+
+    def stop(self):
+        self._running = False
+        self.server.close()
+        try:
+            os.unlink(SOCKET_PATH)
+        except Exception:
+            pass
 
 class ProxyConfigWidget(QWidget):
     def __init__(self, start_proxy_callback, stop_proxy_callback, show_cert_callback):
@@ -61,23 +114,19 @@ class ProxyConfigWidget(QWidget):
         port = int(port)
         try:
             self.start_proxy_callback(host, port)
-            self.status_label.setText(f"Proxy running on {host}:{port}")
+            self.status_label.setText(f"Starting proxy on {host}:{port}...")
         except Exception as ex:
             self.status_label.setText(f"Failed to start proxy: {str(ex)}")
 
     def on_stop_proxy(self):
         self.stop_proxy_callback()
-        self.status_label.setText("Proxy stopped.")
+        self.status_label.setText("Stopping proxy...")
 
 class MainApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Anvesha - Web Security Proxy")
         self.resize(1300, 800)
-        self.displayed_flows = set()
-        self.last_flow_pos = 0  # track last read position in flows file
-        # Initialize displayed_flows before any operation
-        self.displayed_flows = set()
 
         self.tabs = QTabWidget()
         self.logger_tab = LoggerWidget(self.send_to_replay)
@@ -94,9 +143,43 @@ class MainApp(QMainWindow):
 
         self.setCentralWidget(self.tabs)
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.parse_flows_file)
-        self.timer.start(2000)  # every 2 seconds
+        # Proper thread-safe Qt signaling for new flows:
+        self.flow_emitter = FlowEventEmitter()
+        self.flow_emitter.new_flow.connect(self._on_new_flow)
+        self.flow_receiver = FlowReceiverThread(self.flow_emitter.new_flow.emit)
+        self.flow_receiver.start()
+
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_proxy_status)
+        self.status_timer.start(2000)  # every 2 seconds
+
+        # Optional: add test row to verify logger widget shows rows
+        # self.logger_tab.log_request(
+        #     {"method": "GET", "url": "http://test.com", "headers": {"A": "B"}, "body": "BODY"},
+        #     {"status": 200, "headers": {"C": "D"}, "body": "RESPONSE BODY"}
+        # )
+
+    def update_proxy_status(self):
+        if self.proxy_runner.is_running():
+            self.proxy_tab.status_label.setText("Proxy is running")
+        else:
+            self.proxy_tab.status_label.setText("Proxy is stopped")
+
+    def _on_new_flow(self, flow):
+        print("[MainApp] _on_new_flow called")
+        req_dict = {
+            "method": flow.get("method", ""),
+            "url": flow.get("url", ""),
+            "headers": flow.get("headers", {}),
+            "body": flow.get("body", "")
+        }
+        resp_dict = {
+            "status": flow.get("response_status", ""),
+            "headers": flow.get("response_headers", {}),
+            "body": flow.get("response_body", "")
+        }
+        print("[MainApp] Calling logger_tab.log_request with:", req_dict, resp_dict)
+        self.logger_tab.log_request(req_dict, resp_dict)
 
     def start_proxy(self, host, port):
         self.proxy_runner.start_proxy(host, port)
@@ -111,60 +194,13 @@ class MainApp(QMainWindow):
         msg = (
             f"The mitmproxy CA cert is located at:\n\n{ca_cert_file}\n\n"
             "Import it into your browser or device to intercept HTTPS traffic. "
-            "You can also visit http://mitm.it while the proxy is running "
-            "for browser-specific installation instructions."
+            "Visit http://mitm.it while the proxy is running for "
+            "browser-specific installation instructions."
         )
         QMessageBox.information(self, "mitmproxy CA Certificate Location", msg)
         if os.path.exists(mitmproxy_dir):
             webbrowser.open(f'file://{mitmproxy_dir}')
 
-    def parse_flows_file(self):
-        flows_file = self.proxy_runner.flows_file
-        if not flows_file or not hasattr(self, "logger_tab"):
-            return
-        if not os.path.exists(flows_file):
-            return
-        try:
-            with open(flows_file, "r", encoding="utf-8") as f:
-                # Seek to last read position
-                f.seek(self.last_flow_pos)
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        flow = json.loads(line)
-                    except Exception as e:
-                        print(f"Error parsing flow line: {e}")
-                        continue
-                    flow_id = flow.get("id")
-                    if flow_id and flow_id not in self.displayed_flows:
-                        req_dict = {
-                            "method": flow.get("method", ""),
-                            "url": flow.get("url", ""),
-                            "headers": flow.get("headers", {}),
-                            "body": flow.get("body", "")
-                        }
-                        resp_headers = flow.get("response_headers")
-                        resp_status = flow.get("response_status")
-                        resp_body = flow.get("response_body")
-                        resp_dict = None
-                        if resp_headers or resp_status or resp_body:
-                            resp_dict = {
-                                "status": resp_status or "",
-                                "headers": resp_headers or {},
-                                "body": resp_body or ""
-                            }
-                        self.logger_tab.log_request(req_dict, resp_dict)
-                        self.displayed_flows.add(flow_id)
-                # Remember where we ended
-                self.last_flow_pos = f.tell()
-        except Exception as e:
-            print(f"Error reading flows file: {e}")
-
-    def add_log(self, req, res):
-        self.logger_tab.log_request(req, res)
-
-    # Inside MainApp class
     def send_to_replay(self, req_text=None):
         if req_text is None:
             row = self.logger_tab.table.currentRow()
@@ -175,10 +211,11 @@ class MainApp(QMainWindow):
                 req_text = req_item.text()
         if req_text:
             self.replay_tab.add_new_tab(req_text)
-            # Do NOT switch tabs if you want to keep the UI on the current tab
-            # You can uncomment the next line if you want to switch
-            # self.tabs.setCurrentWidget(self.replay_tab)
 
+    def closeEvent(self, event):
+        self.flow_receiver.stop()
+        self.proxy_runner.stop_proxy()
+        super().closeEvent(event)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
