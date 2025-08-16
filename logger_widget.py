@@ -1,18 +1,14 @@
-# logger_widget.py
-import datetime
-import re
-
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton,
     QLineEdit, QHeaderView, QLabel, QHBoxLayout
 )
 from PyQt5.QtCore import Qt
 
-
 class LoggerWidget(QWidget):
-    def __init__(self, send_to_replay_callback):
+    def __init__(self, send_to_replay_callback, send_to_bulk_callback):
         super().__init__()
         self.send_to_replay_callback = send_to_replay_callback
+        self.send_to_bulk_callback = send_to_bulk_callback
 
         main_layout = QVBoxLayout()
 
@@ -29,37 +25,49 @@ class LoggerWidget(QWidget):
         search_layout.addWidget(self.clear_btn)
         main_layout.addLayout(search_layout)
 
-        # Table setup with new columns: ID and Timestamp
+        # Table with columns: ID, Timestamp, Request, Response
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Request ID", "Timestamp", "Request", "Response"])
 
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # ID column minimal width
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Timestamp width
-        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Request half
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Response half
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
 
         main_layout.addWidget(self.table)
 
-        # Send to Replay button
+        # Send buttons
+        btn_layout = QHBoxLayout()
         self.send_btn = QPushButton("Send Selected to Replay")
         self.send_btn.clicked.connect(self.send_selected_to_replay)
-        main_layout.addWidget(self.send_btn)
+        btn_layout.addWidget(self.send_btn)
+
+        self.send_bulk_btn = QPushButton("Send Selected to Bulk Sender")
+        self.send_bulk_btn.clicked.connect(self.send_selected_to_bulk)
+        btn_layout.addWidget(self.send_bulk_btn)
+
+        main_layout.addLayout(btn_layout)
 
         self.setLayout(main_layout)
-
-        # Store all rows for searching and filtering: tuples of (id, timestamp, req_str, resp_str)
         self.all_rows = []
 
     def send_selected_to_replay(self):
         row = self.table.currentRow()
         if row >= 0:
-            item = self.table.item(row, 2)  # Request column index
-            if item:
+            item = self.table.item(row, 2)
+            if item and self.send_to_replay_callback:
                 req_text = item.text()
-                if self.send_to_replay_callback:
-                    self.send_to_replay_callback(req_text)
+                self.send_to_replay_callback(req_text)
+
+    def send_selected_to_bulk(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            item = self.table.item(row, 2)
+            if item and self.send_to_bulk_callback:
+                req_text = item.text()
+                self.send_to_bulk_callback(req_text)
 
     def log_request(self, req_dict, resp_dict):
         req_id = req_dict.get("id", "")
@@ -104,4 +112,54 @@ class LoggerWidget(QWidget):
     def on_clear_clicked(self):
         self.search_input.clear()
 
+    def clear_all(self):
+        self.table.setRowCount(0)
+        self.all_rows.clear()
 
+    def parse_req_resp_to_dict(self, req_id, timestamp, req_str):
+        lines = req_str.strip().split("\n")
+        if not lines:
+            return {}
+        method_url = lines[0].split(" ", 1)
+        method = method_url if len(method_url) > 0 else ""
+        url = method_url if len(method_url) > 1 else ""
+        headers, body = {}, ""
+        parsing_headers = True
+        for line in lines[1:]:
+            if parsing_headers and ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+            else:
+                parsing_headers = False
+                body += line + "\n"
+        return {
+            "id": req_id,
+            "timestamp": timestamp,
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "body": body.strip()
+        }
+
+    def parse_resp_str_to_dict(self, resp_str):
+        lines = resp_str.strip().split("\n")
+        status_line = lines[0] if lines else ""
+        status = ""
+        if status_line.startswith("HTTP"):
+            parts = status_line.split()
+            if len(parts) > 1:
+                status = parts
+        headers, body = {}, ""
+        parsing_headers = True
+        for line in lines[1:]:
+            if parsing_headers and ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+            else:
+                parsing_headers = False
+                body += line + "\n"
+        return {
+            "status": status,
+            "headers": headers,
+            "body": body.strip()
+        }

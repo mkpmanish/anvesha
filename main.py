@@ -1,13 +1,14 @@
 # main.py
 
-import sys, os, re, datetime
+import sys
+import os
 import json
 import threading
 import socket
 import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QLabel,
-    QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox
+    QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFileDialog
 )
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 from logger_widget import LoggerWidget
@@ -19,12 +20,6 @@ from urllib.parse import urlparse
 
 SOCKET_PATH = "/tmp/anvesha_proxy.sock"  # Adjust if needed for your OS
 
-# Remove the socket file before binding, regardless of its state
-try:
-    if os.path.exists(SOCKET_PATH):
-        os.unlink(SOCKET_PATH)
-except Exception as e:
-    print("Failed to remove existing socket file:", e)
 
 class FlowEventEmitter(QObject):
     new_flow = pyqtSignal(dict)
@@ -35,11 +30,13 @@ class FlowReceiverThread(threading.Thread):
         super().__init__(daemon=True)
         self.emit_flow_callback = emit_flow_callback
         self._running = True
+        # Remove socket file before binding
         try:
             if os.path.exists(SOCKET_PATH):
                 os.unlink(SOCKET_PATH)
         except Exception:
             pass
+
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(SOCKET_PATH)
         self.server.listen(1)
@@ -75,12 +72,15 @@ class FlowReceiverThread(threading.Thread):
 
 
 class ProxyConfigWidget(QWidget):
-    def __init__(self, start_proxy_callback, stop_proxy_callback, show_cert_callback, get_request_by_id_callback):
+    def __init__(self, start_proxy_callback, stop_proxy_callback, show_cert_callback,
+                 get_request_by_id_callback, export_all_callback, import_all_callback):
         super().__init__()
         self.start_proxy_callback = start_proxy_callback
         self.stop_proxy_callback = stop_proxy_callback
         self.show_cert_callback = show_cert_callback
         self.get_request_by_id_callback = get_request_by_id_callback
+        self.export_all_callback = export_all_callback
+        self.import_all_callback = import_all_callback
 
         layout = QVBoxLayout()
 
@@ -110,7 +110,7 @@ class ProxyConfigWidget(QWidget):
         self.cert_button.clicked.connect(self.show_cert_callback)
         layout.addWidget(self.cert_button)
 
-        # --- New OpenAPI Export Controls ---
+        # --- OpenAPI Export Controls ---
         export_layout = QHBoxLayout()
         export_label = QLabel("Request ID to Export:")
         self.export_id_input = QLineEdit()
@@ -122,7 +122,18 @@ class ProxyConfigWidget(QWidget):
         export_layout.addWidget(self.export_id_input)
         export_layout.addWidget(export_btn)
         layout.addLayout(export_layout)
-        # ---
+
+        # --- Import/Export All Controls ---
+        imp_exp_layout = QHBoxLayout()
+        export_all_btn = QPushButton("Export All (Logger & Replay)")
+        import_all_btn = QPushButton("Import All")
+
+        export_all_btn.clicked.connect(self.export_all)
+        import_all_btn.clicked.connect(self.import_all)
+
+        imp_exp_layout.addWidget(export_all_btn)
+        imp_exp_layout.addWidget(import_all_btn)
+        layout.addLayout(imp_exp_layout)
 
         self.status_label = QLabel("")
         layout.addWidget(self.status_label)
@@ -165,6 +176,14 @@ class ProxyConfigWidget(QWidget):
         dlg.setText("OpenAPI 3.0 JSON exported. Save to file as needed.")
         dlg.setDetailedText(openapi_json)
         dlg.exec_()
+
+    def export_all(self):
+        if self.export_all_callback:
+            self.export_all_callback()
+
+    def import_all(self):
+        if self.import_all_callback:
+            self.import_all_callback()
 
 
 def openapi_from_request(req_dict):
@@ -232,6 +251,20 @@ def build_basic_openapi_document(operation):
     }
 
 
+def make_req_str_from_dict(req_dict):
+    request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
+    headers = req_dict.get('headers', {})
+    headers_str = "\n".join(f"{k}: {v}" for k, v in headers.items()) if headers else ""
+    body = req_dict.get('body', '')
+    parts = [request_line]
+    if headers_str:
+        parts.append(headers_str)
+    if body:
+        parts.append("")
+        parts.append(body)
+    return "\n".join(parts)
+
+
 class MainApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -239,7 +272,7 @@ class MainApp(QMainWindow):
         self.resize(1400, 900)
 
         self.tabs = QTabWidget()
-        self.logger_tab = LoggerWidget(self.send_to_replay)
+        self.logger_tab = LoggerWidget(self.send_to_replay, self.send_to_bulk_sender)
         self.replay_tab = ReplayWidget()
         self.bulk_tab = BulkSenderWidget()
 
@@ -249,6 +282,8 @@ class MainApp(QMainWindow):
             self.stop_proxy,
             self.show_cert,
             self.get_request_by_id,
+            self.export_all_data,
+            self.import_all_data,
         )
 
         self.tabs.addTab(self.proxy_tab, "Proxy Config")
@@ -267,7 +302,6 @@ class MainApp(QMainWindow):
         self.status_timer.timeout.connect(self.update_proxy_status)
         self.status_timer.start(2000)  # every 2 seconds
 
-        # Map request ID (UUID) -> req_dict for lookup
         self.request_map = {}
 
     def update_proxy_status(self):
@@ -278,8 +312,8 @@ class MainApp(QMainWindow):
 
     def _on_new_flow(self, flow):
         req_dict = {
-            "id": self.shorten_uuid(flow.get("id")),  # store UUID for request identification
-            "timestamp": self.shortened_iso_timestamp(),
+            "id": flow.get("id"),
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "method": flow.get("method", ""),
             "url": flow.get("url", ""),
             "headers": flow.get("headers", {}),
@@ -318,29 +352,94 @@ class MainApp(QMainWindow):
             row = self.logger_tab.table.currentRow()
             if row == -1:
                 return
-            req_item = self.logger_tab.table.item(row, 2)  # Request column index in logger widget with timestamp and ID
+            req_item = self.logger_tab.table.item(row, 2)
             if req_item:
                 req_text = req_item.text()
         if req_text:
             self.replay_tab.add_new_tab(req_text)
 
+    def send_to_bulk_sender(self, req_text=None):
+        if req_text is None:
+            row = self.logger_tab.table.currentRow()
+            if row == -1:
+                return
+            req_item = self.logger_tab.table.item(row, 2)
+            if req_item:
+                req_text = req_item.text()
+        if req_text:
+            self.bulk_tab.add_request(req_text)
+
     def get_request_by_id(self, req_id):
         return self.request_map.get(req_id)
+
+    def export_all_data(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Exported Data", "", "JSON Files (*.json)")
+        if not filename:
+            return
+        try:
+            # Prepare clean dict format for logger requests
+            logger_data = []
+            for req_id, timestamp, req_str, resp_str in self.logger_tab.all_rows:
+                req_dict = self.logger_tab.parse_req_resp_to_dict(req_id, timestamp, req_str)
+                resp_dict = self.logger_tab.parse_resp_str_to_dict(resp_str)
+                logger_data.append({'request': req_dict, 'response': resp_dict})
+
+            replay_data = self.replay_tab.get_all_replay_data()
+
+            data = {
+                "logger_requests": logger_data,
+                "replay_requests": replay_data
+            }
+
+            with open(filename, "w") as f:
+                json.dump(data, f, indent=2)
+            QMessageBox.information(self, "Export Successful", f"Exported data saved to {filename}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Failed", str(e))
+
+    def make_req_str_from_dict(req_dict):
+        """Helper to build a request string from parsed dict."""
+        request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
+        headers = req_dict.get('headers', {})
+        headers_str = "\n".join(f"{k}: {v}" for k, v in headers.items()) if headers else ""
+        body = req_dict.get('body', '')
+        parts = [request_line]
+        if headers_str:
+            parts.append(headers_str)
+        if body:
+            parts.append("")  # blank line before body
+            parts.append(body)
+        return "\n".join(parts)
+
+    def import_all_data(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Open Exported Data", "", "JSON Files (*.json)")
+        if not filename:
+            return
+        try:
+            with open(filename, "r") as f:
+                data = json.load(f)
+            logger_requests = data.get("logger_requests", [])
+            replay_requests = data.get("replay_requests", [])
+
+            self.logger_tab.clear_all()
+            for item in logger_requests:
+                req_dict = item.get('request', {})
+                resp_dict = item.get('response', {})
+                if req_dict:
+                    self.logger_tab.log_request(req_dict, resp_dict)
+
+            self.replay_tab.clear_all()
+            for item in replay_requests:
+                self.replay_tab.load_replay_data(item)
+
+            QMessageBox.information(self, "Import Successful", f"Imported data loaded from {filename}")
+        except Exception as e:
+            QMessageBox.warning(self, "Import Failed", str(e))
 
     def closeEvent(self, event):
         self.flow_receiver.stop()
         self.proxy_runner.stop_proxy()
         super().closeEvent(event)
-
-    def shorten_uuid(self,uuid_str):
-        if not uuid_str:
-            return ""
-        # Remove non alphanumeric, then take first 10 chars
-        cleaned = re.sub(r'[^a-zA-Z0-9]', '', uuid_str)
-        return cleaned[:10]
-
-    def shortened_iso_timestamp(self):
-        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 if __name__ == "__main__":
