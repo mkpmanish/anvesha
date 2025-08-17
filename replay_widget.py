@@ -48,7 +48,8 @@ class SingleReplayTab(QWidget):
     def send_request(self):
         req_text = self.req_editor.toPlainText()
         try:
-            lines = [l for l in req_text.strip().split('\n') if l.strip()]
+            # lines = [l for l in req_text.strip().split('\n') if l.strip()]
+            lines = req_text.splitlines()
             request_line = lines[0]
             method, url, *_ = request_line.split()
             headers = {}
