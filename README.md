@@ -89,6 +89,6 @@ Once everything is installed hit ```http://mitm.it``` and follow the platform/br
 
 - If responses appear truncated, increase the `max_tokens` parameter in your analysis settings/code (see AI Analyser section).
 - Ensure network connectivity for outgoing requests to Perplexity API.
-- All logs and results should now appear without requiring any manual refresh.
+- All log and results should now appear without requiring any manual refresh.
 
 
