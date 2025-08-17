@@ -1,5 +1,3 @@
-# main.py
-
 import sys
 import os
 import json
@@ -8,7 +6,7 @@ import socket
 import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QLabel,
-    QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFileDialog
+    QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox, QFileDialog, QTextEdit
 )
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 from logger_widget import LoggerWidget
@@ -17,6 +15,7 @@ from bulksender_widget import BulkSenderWidget
 from proxy_runner import ProxyRunner
 import webbrowser
 from urllib.parse import urlparse
+from ai_analyser_widget import AIAnalyserWidget
 
 SOCKET_PATH = "/tmp/anvesha_proxy.sock"  # Adjust if needed for your OS
 
@@ -110,6 +109,15 @@ class ProxyConfigWidget(QWidget):
         self.cert_button.clicked.connect(self.show_cert_callback)
         layout.addWidget(self.cert_button)
 
+        # --- Perplexity AI Configuration ---
+        ai_layout = QVBoxLayout()
+        ai_label = QLabel("Perplexity AI Configuration:")
+        self.perplexity_api_key_input = QLineEdit()
+        self.perplexity_api_key_input.setPlaceholderText("Perplexity API Key")
+        ai_layout.addWidget(ai_label)
+        ai_layout.addWidget(self.perplexity_api_key_input)
+        layout.addLayout(ai_layout)
+
         # --- OpenAPI Export Controls ---
         export_layout = QHBoxLayout()
         export_label = QLabel("Request ID to Export:")
@@ -185,6 +193,9 @@ class ProxyConfigWidget(QWidget):
         if self.import_all_callback:
             self.import_all_callback()
 
+    def get_perplexity_api_key(self):
+        return self.perplexity_api_key_input.text().strip()
+
 
 def openapi_from_request(req_dict):
     method = req_dict.get("method", "get").lower()
@@ -253,7 +264,6 @@ def build_basic_openapi_document(operation):
 
 def make_req_str_from_dict(req_dict):
     request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
-    request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
     headers = req_dict.get('headers', {})
     headers_str = "\n".join(f"{k}: {v}" for k, v in headers.items()) if headers else ""
     body = req_dict.get('body', '')
@@ -261,9 +271,45 @@ def make_req_str_from_dict(req_dict):
     if headers_str:
         parts.append(headers_str)
     if body:
-        parts.append("")
+        parts.append("")  # blank line before body
         parts.append(body)
     return "\n".join(parts)
+
+
+# class AIAnalyserWidget(QWidget):
+#     def __init__(self, get_api_key_callback):
+#         super().__init__()
+#         layout = QVBoxLayout(self)
+#         layout.addWidget(QLabel("Paste an HTTP request below to analyse:"))
+#
+#         self.req_editor = QTextEdit()
+#         layout.addWidget(self.req_editor)
+#
+#         self.analyze_btn = QPushButton("Analyze with Perplexity")
+#         layout.addWidget(self.analyze_btn)
+#
+#         self.result_label = QLabel("Result will appear below.")
+#         self.result_box = QTextEdit()
+#         self.result_box.setReadOnly(True)
+#         layout.addWidget(self.result_label)
+#         layout.addWidget(self.result_box)
+#
+#         self.analyze_btn.clicked.connect(self.analyze_request)
+#         self.get_api_key_callback = get_api_key_callback
+#
+#     def analyze_request(self):
+#         req_text = self.req_editor.toPlainText().strip()
+#         api_key = self.get_api_key_callback()
+#         if not api_key:
+#             self.result_box.setText("Please configure your Perplexity API key in the Proxy Config tab.")
+#             return
+#         if not req_text:
+#             self.result_box.setText("Paste an HTTP request first.")
+#             return
+#
+#         # Placeholder for real API call - implement Perplexity API send here
+#         # You could use 'requests' or an async client to call the API with your key and req_text as prompt
+#         self.result_box.setText("Analyzing with Perplexity... (API call not implemented)\n\n" + req_text)
 
 
 class MainApp(QMainWindow):
@@ -287,10 +333,13 @@ class MainApp(QMainWindow):
             self.import_all_data,
         )
 
+        self.ai_tab = AIAnalyserWidget(self.proxy_tab.get_perplexity_api_key)
+
         self.tabs.addTab(self.proxy_tab, "Proxy Config")
         self.tabs.addTab(self.logger_tab, "Request Logger")
         self.tabs.addTab(self.replay_tab, "Replay")
         self.tabs.addTab(self.bulk_tab, "Bulk Sender")
+        self.tabs.addTab(self.ai_tab, "AI Analyser")
 
         self.setCentralWidget(self.tabs)
 
@@ -398,20 +447,6 @@ class MainApp(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", str(e))
 
-    def make_req_str_from_dict(req_dict):
-        """Helper to build a request string from parsed dict."""
-        request_line = f"{req_dict.get('method', '')} {req_dict.get('url', '')}"
-        headers = req_dict.get('headers', {})
-        headers_str = "\n".join(f"{k}: {v}" for k, v in headers.items()) if headers else ""
-        body = req_dict.get('body', '')
-        parts = [request_line]
-        if headers_str:
-            parts.append(headers_str)
-        if body:
-            parts.append("")  # blank line before body
-            parts.append(body)
-        return "\n".join(parts)
-
     def import_all_data(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Open Exported Data", "", "JSON Files (*.json)")
         if not filename:
@@ -436,7 +471,6 @@ class MainApp(QMainWindow):
             QMessageBox.information(self, "Import Successful", f"Imported data loaded from {filename}")
         except Exception as e:
             QMessageBox.warning(self, "Import Failed", str(e))
-
 
     def closeEvent(self, event):
         self.flow_receiver.stop()

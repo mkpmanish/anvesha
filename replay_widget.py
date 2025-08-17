@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QDateTime
 
-
 def get_main_window_with_tabs(widget):
     parent = widget.parent()
     while parent is not None:
@@ -15,7 +14,6 @@ def get_main_window_with_tabs(widget):
             return parent
         parent = parent.parent()
     return None
-
 
 class SingleReplayTab(QWidget):
     def __init__(self):
@@ -48,7 +46,6 @@ class SingleReplayTab(QWidget):
     def send_request(self):
         req_text = self.req_editor.toPlainText()
         try:
-            # lines = [l for l in req_text.strip().split('\n') if l.strip()]
             lines = req_text.splitlines()
             request_line = lines[0]
             method, url, *_ = request_line.split()
@@ -120,6 +117,12 @@ class ReplayWidget(QWidget):
         self.send_to_bulk_btn.clicked.connect(self.send_selected_to_bulk_sender)
         self.layout.addWidget(self.send_to_bulk_btn)
 
+        # --- Added: Send to AI Analyser button
+        self.send_to_ai_btn = QPushButton("Send Selected Tab to AI Analyser")
+        self.send_to_ai_btn.clicked.connect(self.send_selected_to_ai_analyser)
+        self.layout.addWidget(self.send_to_ai_btn)
+        # ---
+
         self.tab_count = 0
 
     def select_folder(self):
@@ -164,6 +167,33 @@ class ReplayWidget(QWidget):
 
         bulk_tab.add_request(req_text)
         index = main_win.tabs.indexOf(bulk_tab)
+        if index != -1:
+            main_win.tabs.setCurrentIndex(index)
+
+    # --- New method to send to AI Analyser
+    def send_selected_to_ai_analyser(self):
+        current_tab = self.tab_widget.currentWidget()
+        if not current_tab:
+            QMessageBox.information(self, "No Tab Selected", "No replay tab is currently selected.")
+            return
+        req_text = current_tab.req_editor.toPlainText()
+        if not req_text.strip():
+            QMessageBox.warning(self, "Empty Request", "The selected replay tab has an empty request.")
+            return
+
+        main_win = get_main_window_with_tabs(self)
+        ai_tab = None
+        if main_win:
+            for i in range(main_win.tabs.count()):
+                widget = main_win.tabs.widget(i)
+                if widget and widget.__class__.__name__ == 'AIAnalyserWidget':
+                    ai_tab = widget
+                    break
+        if not ai_tab:
+            QMessageBox.warning(self, "AI Analyser Tab Not Found", "Could not find AI Analyser tab to send requests.")
+            return
+        ai_tab.req_editor.setPlainText(req_text)
+        index = main_win.tabs.indexOf(ai_tab)
         if index != -1:
             main_win.tabs.setCurrentIndex(index)
 
