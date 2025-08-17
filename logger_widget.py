@@ -80,7 +80,7 @@ class LoggerWidget(QWidget):
         resp_str = ""
         if resp_dict:
             resp_str = (
-                f"HTTP {resp_dict.get('status', '')}\n" +
+                f"{resp_dict.get('status', '')}\n" +
                 "\n".join(f"{k}: {v}" for k, v in (resp_dict.get('headers') or {}).items()) +
                 ("\n\n" + resp_dict.get('body', '') if resp_dict.get('body') else "")
             )

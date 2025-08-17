@@ -425,7 +425,6 @@ class MainApp(QMainWindow):
             self.logger_tab.clear_all()
             for item in logger_requests:
                 req_dict = item.get('request', {})
-                print(req_dict)
                 resp_dict = item.get('response', {})
                 if req_dict:
                     self.logger_tab.log_request(req_dict, resp_dict)
