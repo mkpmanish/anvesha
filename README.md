@@ -57,6 +57,10 @@ Anvesha is a Python-based desktop application built with PyQt5 that functions as
 - **mitmproxy** installed and accessible in your environment (`mitmdump` command)
 
 ### Required Python Packages
-Install dependencies using pip:
+Install dependencies using pip: ```pip install -r requirements.txt```
+
+### Configuring certificate
+Once everything is installed hit ```http://mitm.it``` and follow the platform/browser specific steps to configure pre-generated certificate.
+
 
 
